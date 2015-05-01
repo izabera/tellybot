@@ -1,0 +1,6 @@
+nick=tellybot
+host=irc.freenode.net
+port=6667
+owner=izabera
+nickserv=yes
+password=helloworld

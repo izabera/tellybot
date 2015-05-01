@@ -1,0 +1,91 @@
+#!/bin/bash
+if [[ -s ${rc="$HOME/.tellyrc"} ]]; then
+  source "$rc"
+else
+  read -r -p 'Nick: ' nick -i telly
+  read -r -p 'Host: ' host -i irc.freenode.net
+  read -r -p 'Port: ' port -i 6667
+  read -r -p 'Owner: ' owner -i "$USER"
+fi
+
+shopt -s nullglob extglob nocasematch
+
+exec {irc}<>"/dev/tcp/$host/$port" || { echo "Connection to $host failed" >&2 ; exit 1; }
+[[ -t 1 ]] && echo Connected
+exec 1>&"$irc" 0<&"$irc"
+
+join () { [[ $1 ]] && printf 'JOIN %s\n'          "$@"                   ; } >&"$irc"
+part () { [[ $1 ]] && printf 'PART %s :%s\n'      "$1" "${2-"$partmsg"}" ; } >&"$irc"
+say  () { [[ $2 ]] && printf 'PRIVMSG %s :%s\n'   "$1" "${*:2}"          ; } >&"$irc"
+quit () {             printf 'QUIT :%s\n'         "${*-"$quitmsg"}"      ; } >&"$irc"
+nick () { [[ $1 ]] && printf 'NICK %s\n'          "$1"                   ; } >&"$irc"
+user () { [[ $3 ]] && printf 'USER %s %s * :%s\n' "$@"                   ; } >&"$irc"
+
+nick "$nick"
+user "${user:-"$nick"}" "${mode:-0}" "${realname:-"$nick"}"
+[[ $nickserv = yes ]] && printf 'PRIVMSG NickServ :identify %s\n' "$password"
+join "${channels[@]}"
+
+mkfifo fifo
+cat <> fifo &
+trap 'declare -p notes msgs > saved; rm fifo; kill $!' EXIT
+
+if [[ -r ${saved=${BASH_SOURCE%/*}/saved} ]]; then
+  source "$saved"
+else
+  declare -A notes
+fi
+
+export TZ=Europe/Rome
+
+# change this at runtime to change the bot's behaviour
+definedlater () { : ; }
+
+while read -r raw; do
+  raw=${raw%$'\r'}
+  definedlater "$raw"
+
+  read -r sender type target msg <<< "$raw"
+  msg=${msg#:} sender=${sender#:} sender=${sender%%!*}
+
+  if [[ $sender = PING ]]; then
+    printf 'PONG %s\n' "$type"
+    continue
+  fi
+
+
+  if [[ $type = @(PRIVMSG|JOIN) && ${notes[${sender,,}]} ]]; then
+    say "$sender" "Private messages for you:"
+    IFS=: read -ra send_these_messages <<< "${notes[${sender,,}]}"
+    for msg in "${send_these_messages[@]}"; do
+      say "$sender" "${msgs[msg]}"
+      sleep 1
+    done &
+    notes[${sender,,}]=
+  fi
+
+
+  # we only care about messages like this:
+  # @user hello user i wanted to say you that you rock
+  # @   user      hi
+
+  # ignore these
+  # user: hello
+  # @user
+  if [[ $type = PRIVMSG && $msg =~ ^@[[:space:]]*([^[:space:]]*)[[:space:]]*([^[:space:]].*)$ ]]; then
+    if [[ $target = "#"* ]]; then
+      say "$target" "Ok $sender"
+    else
+      say "$sender" "Ok $sender"
+    fi
+    printf -v "msgs[++i]" "%(%F %T)T <%s> %s" -1 "$sender" "${BASH_REMATCH[2]}"
+    notes[${BASH_REMATCH[1],,}]+=$i:
+  fi
+
+  if [[ $type = PRIVMSG && $sender = "$owner" && $msg = !* ]]; then
+    eval "${msg#!}"
+  fi
+
+  # security
+  [[ $type = QUIT && $sender = "$owner" ]] && quit
+done
